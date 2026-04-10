@@ -1,4 +1,16 @@
 
+"""
+tests/test_embedder.py
+Full test suite for the embedder module (Milestone 2).
+
+All tests use mock encoders — NO model downloads required.
+Mock encoders produce deterministic random vectors of the correct shape
+and dtype, allowing us to test all pipeline logic without torch/HuggingFace.
+
+Run:
+    pytest tests/test_embedder.py -v
+    pytest tests/test_embedder.py -v --cov=embedder
+"""
 
 import numpy as np
 import pytest
@@ -342,3 +354,75 @@ class TestEmbedderIntegration:
         assert scores_text.shape == (8,)
         assert scores_multi.shape == (8,)
         assert np.all(np.abs(scores_text) <= 1.01)   # cosine similarity ≤ 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _pad_to_dim utility
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPadToDim:
+    def test_pad_smaller_to_larger(self):
+        v = np.ones(512, dtype=np.float32)
+        v /= np.linalg.norm(v)
+        result = _pad_to_dim(v, 768)
+        assert result.shape == (768,)
+
+    def test_truncate_larger_to_smaller(self):
+        v = np.ones(768, dtype=np.float32)
+        result = _pad_to_dim(v, 512)
+        assert result.shape == (512,)
+
+    def test_same_dim_returns_copy(self):
+        v = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        result = _pad_to_dim(v, 3)
+        assert result.shape == (3,)
+        assert not np.shares_memory(result, v)
+
+    def test_output_is_unit_norm(self):
+        v = np.random.rand(512).astype(np.float32)
+        result = _pad_to_dim(v, 768)
+        assert abs(np.linalg.norm(result) - 1.0) < 1e-5
+
+    def test_zero_vector_no_division_error(self):
+        v = np.zeros(512, dtype=np.float32)
+        result = _pad_to_dim(v, 768)
+        assert result.shape == (768,)
+        assert np.all(result == 0.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CodeBERTEncoder unit tests (mock-based)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCodeBERTEncoder:
+    def test_encode_returns_768_dim(self):
+        enc = make_mock_text_encoder(768)
+        vec = enc.encode("def foo(): return 42")
+        assert vec.shape == (768,)
+
+    def test_encode_is_unit_norm(self):
+        enc = make_mock_text_encoder(768)
+        vec = enc.encode("def foo(): return 42")
+        assert abs(np.linalg.norm(vec) - 1.0) < 1e-5
+
+    def test_encode_batch_shape(self):
+        enc = make_mock_text_encoder(768)
+        texts = ["def foo(): pass", "def bar(): return 1", "def baz(x): return x"]
+        vecs = enc.encode_batch(texts)
+        assert vecs.shape == (3, 768)
+
+    def test_encode_batch_empty(self):
+        enc = make_mock_text_encoder(768)
+        vecs = enc.encode_batch([])
+        assert vecs.shape[0] == 0
+
+    def test_encode_batch_dtype_float32(self):
+        enc = make_mock_text_encoder(768)
+        vecs = enc.encode_batch(["def foo(): pass"])
+        assert vecs.dtype == np.float32
+
+    def test_different_texts_produce_different_vectors(self):
+        enc = make_mock_text_encoder(768)
+        v1 = enc.encode("def process_checkout(cart): return order")
+        v2 = enc.encode("def render_homepage(request): return template")
+        # Should not be identical (mock uses hash-based seeding)
+        assert not np.allclose(v1, v2)
